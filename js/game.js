@@ -77,19 +77,6 @@ function applyDeviceClass(){
   G.orientation = ori;
   document.body.classList.toggle('orientation-portrait',  ori === 'portrait');
   document.body.classList.toggle('orientation-landscape', ori === 'landscape');
-
-  /* ★ 根据是否在游戏中，同步隐藏顶部导航栏 */
-  const tb = document.querySelector('.topbar');
-  if(tb){
-    const gs = document.getElementById('gameScreen');
-    const inGame = gs && !gs.classList.contains('hidden');
-    if(mobile && ori === 'landscape' && inGame){
-      tb.style.display = 'none';
-    } else {
-      tb.style.display = '';
-    }
-  }
-
   const hint = document.getElementById('portraitHint');
   if(hint){
     if(mobile && ori === 'portrait') hint.classList.remove('hidden');
@@ -147,6 +134,23 @@ function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, function(c){
     return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c];
   });
+}
+
+/* ★ Toast 提示（替代 alert，手机/电脑通用） */
+function appToast(msg, type){
+  let el = document.getElementById('appToast');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'appToast';
+    el.className = 'app-toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.className = 'app-toast show' + (type ? ' ' + type : '');
+  clearTimeout(el._timer);
+  el._timer = setTimeout(function(){
+    el.classList.remove('show');
+  }, 2600);
 }
 
 /* ================= 筹码面额拆分 ================= */
@@ -812,11 +816,28 @@ function renderTableGrid(containerId, mode){
         '<span>' + rightText + '</span>' +
       '</div>' +
       '<div class="table-card-actions">' + actionsHtml + '</div>';
+
+    /* ★ 手机兼容：click + touchend 双绑定，防止手机浏览器漏点 */
+    function bindTap(el, fn){
+      if(!el) return;
+      let lastFire = 0;
+      function fire(e){
+        const now = Date.now();
+        if(now - lastFire < 400) return;
+        lastFire = now;
+        if(e && e.preventDefault) e.preventDefault();
+        if(window.PokerAudio) PokerAudio.play('click');
+        fn();
+      }
+      el.addEventListener('touchend', fire, { passive: false });
+      el.addEventListener('click', fire);
+    }
+
     if(mode === 'ai'){
-      card.querySelector(".btn-seat").onclick = function(){ if(window.PokerAudio) PokerAudio.play('click'); openAiLevel(lv); };
+      bindTap(card.querySelector(".btn-seat"), function(){ openAiLevel(lv); });
     } else {
-      card.querySelector(".btn-create").onclick = function(){ if(window.PokerAudio) PokerAudio.play('click'); createRoom(lv, mode); };
-      card.querySelector(".btn-join").onclick = function(){ if(window.PokerAudio) PokerAudio.play('click'); joinRoomByCode(lv, mode); };
+      bindTap(card.querySelector(".btn-create"), function(){ createRoom(lv, mode); });
+      bindTap(card.querySelector(".btn-join"), function(){ joinRoomByCode(lv, mode); });
     }
     grid.appendChild(card);
   });
@@ -868,13 +889,8 @@ function openAiLevel(lv){
   G.handNumber = 0; G.gameOver = false;
   $("lobbyScreen").classList.add("hidden");
   $("gameScreen").classList.remove("hidden");
-  /* ★ 新开一局，清空历史记录 */
+  document.body.classList.add('game-active');
   if(PokerStorage.clearHandHistory) PokerStorage.clearHandHistory();
-  /* ★ 隐藏顶部网页导航栏 */
-  if(G.isMobile && G.orientation === 'landscape'){
-    const tb = document.querySelector('.topbar');
-    if(tb) tb.style.display = 'none';
-  }
   $("onlineLobby").classList.add("hidden");
   if($("gameLevelLabel")) $("gameLevelLabel").textContent = lv.name + " " + lv.sb + "/" + lv.bb + " · " + G.players.length + (isEn() ? "P" : "人");
   if($("gameModeLabel")){ $("gameModeLabel").textContent = isEn() ? "AI" : "AI 练习"; $("gameModeLabel").classList.remove('real'); }
@@ -890,17 +906,19 @@ function openAiLevel(lv){
 function checkOnlinePreconditions(lv, mode){
   if(mode === 'real'){
     if(!window.PokerWallet || !PokerWallet.isConnected()){
-      alert(isEn() ? "Connect wallet first" : "请先连接钱包");
+      appToast(isEn() ? "Connect wallet first" : "请先连接钱包", "error");
       $("walletOverlay").classList.remove("hidden");
       return false;
     }
-    if(PokerStorage.getRealChips() < lv.buyMin){
-      alert(isEn() ? "Not enough chips. Deposit BEM first." : "对战场筹码不足，请先充值 BEM");
+    if(PokerStorage.getRealChips() < lv.buyMax){
+      appToast(isEn() ? ("Not enough chips. Need " + lv.buyMax.toLocaleString())
+                      : ("对战场筹码不足，需要 " + lv.buyMax.toLocaleString() + " 筹码"), "error");
       return false;
     }
   } else {
-    if(PokerStorage.getPoints() < lv.buyMin){
-      alert(isEn() ? "Not enough points." : "积分不足");
+    if(PokerStorage.getPoints() < lv.buyMax){
+      appToast(isEn() ? ("Not enough points. Need " + lv.buyMax.toLocaleString())
+                      : ("积分不足，需要 " + lv.buyMax.toLocaleString() + " 积分"), "error");
       return false;
     }
   }
@@ -913,11 +931,12 @@ function generateRoomId(lv, mode){
 function createRoom(lv, mode){
   if(!checkOnlinePreconditions(lv, mode)) return;
   const roomId = generateRoomId(lv, mode);
+  appToast(isEn() ? "Creating room..." : "正在创建房间...", "");
   PokerOnline.createRoom(roomId, { level: lv.key, mode: mode }).then(function(){
     enterOnlineRoom(lv, mode, roomId, true);
   }).catch(function(err){
-    console.error(err);
-    alert(isEn() ? "Connection failed" : "连接失败");
+    console.error('[createRoom]', err);
+    appToast((isEn() ? "Connection failed: " : "连接失败：") + (err && err.message ? err.message : err), "error");
   });
 }
 function joinRoomByCode(lv, mode){
@@ -928,19 +947,20 @@ function joinRoomByCode(lv, mode){
   input.value = '';
   $("joinRoomConfirmBtn").onclick = function(){
     const code = input.value.trim();
-    if(!code){ alert(isEn() ? "Enter a room code" : "请输入房间号"); return; }
+    if(!code){ appToast(isEn() ? "Enter a room code" : "请输入房间号", "error"); return; }
     overlay.classList.add("hidden");
     doJoinRoom(lv, mode, code);
   };
   $("joinRoomCancelBtn").onclick = function(){ overlay.classList.add("hidden"); };
-  setTimeout(function(){ input.focus(); }, 100);
+  setTimeout(function(){ try { input.focus(); } catch(e){} }, 100);
 }
 function doJoinRoom(lv, mode, roomId){
+  appToast(isEn() ? "Joining..." : "正在加入...", "");
   PokerOnline.joinRoom(roomId).then(function(){
     enterOnlineRoom(lv, mode, roomId, false);
   }).catch(function(err){
-    console.error(err);
-    alert(isEn() ? "Connection failed" : "连接失败");
+    console.error('[doJoinRoom]', err);
+    appToast((isEn() ? "Join failed: " : "加入失败：") + (err && err.message ? err.message : err), "error");
   });
 }
 function enterOnlineRoom(lv, mode, roomId, isHost){
@@ -962,11 +982,8 @@ function enterOnlineRoom(lv, mode, roomId, isHost){
   G._timerKey = null; G._nextHandEndsAt = 0; G._turnEndsAt = 0;
   $("lobbyScreen").classList.add("hidden");
   $("gameScreen").classList.remove("hidden");
+  document.body.classList.add('game-active');
   if(PokerStorage.clearHandHistory) PokerStorage.clearHandHistory();
-  if(G.isMobile && G.orientation === 'landscape'){
-    const tb = document.querySelector('.topbar');
-    if(tb) tb.style.display = 'none';
-  }
   $("onlineLobby").classList.add("hidden");
   if($("gameLevelLabel")) $("gameLevelLabel").textContent = lv.name + " " + lv.sb + "/" + lv.bb + " · " + (isEn() ? "Online" : "联机");
   if($("gameModeLabel")){
@@ -997,22 +1014,26 @@ function hostStartGame(playerOrder, playersInfo){
   });
   const lv = G._onlineLv || LEVELS[0];
   const buyInChips = lv.buyMax;
+  console.log('[hostStartGame] lv =', lv.key, 'buyInChips =', buyInChips);
 
   G.players = ordered.map(function(pid){
     const info = playersInfo.find(function(p){ return p.peerId === pid; }) || { name:'Player', seat: 0 };
     const isSelf = pid === myId;
     if(isSelf){
-      const have = PokerStorage.getPoints();
+      let have = PokerStorage.getPoints();
       if(have < buyInChips){
         PokerStorage.addPoints(buyInChips - have + 10000);
+        have = PokerStorage.getPoints();
       }
-      PokerStorage.setPoints(PokerStorage.getPoints() - buyInChips);
+      PokerStorage.setPoints(have - buyInChips);
     }
     return {
       id: info.seat || 0, peerId: pid, name: info.name,
       emoji: isSelf ? PokerAvatars.HUMAN.emoji : '🎮',
       bg: isSelf ? PokerAvatars.HUMAN.bg : 'linear-gradient(135deg,#a855f7,#6d28d9)',
-      isHuman: isSelf, chips: buyInChips, seated: true,
+      isHuman: isSelf,
+      chips: buyInChips,
+      seated: true,
       holeCards: [], folded:false, allIn:false, currentBet:0,
       totalContributed:0, needsToAct:false,
       position:"", positionKey:"", lastAction:"", styleKey:null,
@@ -1540,9 +1561,10 @@ function handleOnlineMessage(msg){
       const players = (window.PokerOnline && PokerOnline.getRoomPlayers) ? PokerOnline.getRoomPlayers() : {};
       const ids = Object.keys(players);
       if(ids.length === 0){
-        alert(isEn() ? "Room closed" : "房间已关闭");
+        appToast(isEn() ? "Room closed" : "房间已关闭", "error");
         G.online.active = false;
         resetSessionState(); resetTableDom(); hideWaitingBar();
+        document.body.classList.remove('game-active');
         $("gameScreen").classList.add("hidden");
         $("lobbyScreen").classList.remove("hidden");
         showScreen("lobby");
@@ -1551,10 +1573,11 @@ function handleOnlineMessage(msg){
       break;
     }
     case 'room_full':
-      alert(isEn() ? "Room is full (max 7)" : "房间已满（最多 7 人）");
+      appToast(isEn() ? "Room is full (max 7)" : "房间已满（最多 7 人）", "error");
       try { PokerOnline.leaveRoom(); } catch(e){}
       G.online.active = false;
       resetSessionState(); resetTableDom(); hideWaitingBar();
+      document.body.classList.remove('game-active');
       $("gameScreen").classList.add("hidden");
       $("lobbyScreen").classList.remove("hidden");
       showScreen("lobby");
@@ -2277,7 +2300,7 @@ function showRebuy(){
       PokerStorage.setPoints(pts - amount);
     } else if(G.gameMode === 'real'){
       if(PokerStorage.getRealChips() < amount){
-        alert(isEn() ? "Not enough chips. Please deposit BEM." : "对战场筹码不足，请充值 BEM");
+        appToast(isEn() ? "Not enough chips. Please deposit BEM." : "对战场筹码不足，请充值 BEM", "error");
         return;
       }
       PokerStorage.setRealChips(PokerStorage.getRealChips() - amount);
@@ -2331,9 +2354,7 @@ function backToLobby(){
   hideNextHandToast();
   clearAllBubbles();
   G.gameOver = true;
-  /* ★ 恢复顶部导航栏 */
-  const tb = document.querySelector('.topbar');
-  if(tb) tb.style.display = '';
+  document.body.classList.remove('game-active');
   $("gameScreen").classList.add("hidden");
   $("lobbyScreen").classList.remove("hidden");
   $("onlineLobby").classList.add("hidden");
@@ -2406,28 +2427,11 @@ function render(){
     }
     seat.style.left = pos.x + "%";
     seat.style.top = pos.y + "%";
-
-    /* ★ 计算筹码堆应该浮在座位的哪一侧 */
-    let chipSide = 'right';
-    if(i === myIndex()){
-      chipSide = 'self';
-    } else if(pos.x < 45){
-      chipSide = 'left';
-    } else if(pos.x > 55){
-      chipSide = 'right';
-    } else if(pos.y < 50){
-      chipSide = 'top';
-    } else {
-      chipSide = 'bottom';
-    }
-    seat.setAttribute('data-chip-side', chipSide);
-
     seat.classList.toggle("folded", (!!p.folded || p.seated === false) && !p.revealCards);
     seat.classList.toggle("reveal", !!p.revealCards);
     seat.classList.toggle("empty", p.seated === false);
     seat.classList.toggle("intent-reveal", !!p._intentReveal);
 
-    /* ★ 只有当前回合的玩家亮金色 */
     const isCurrentTurn = (G.currentPlayerIndex === i)
       && !G.gameOver
       && !p.folded
@@ -2436,7 +2440,7 @@ function render(){
       && p.seated !== false;
     const isMe = (i === myIndex());
     seat.classList.toggle("active", isCurrentTurn);
-    seat.classList.toggle("me", isMe);
+    seat.classList.toggle("me", isMe && !isCurrentTurn);
 
     let betInfo = "";
     if(p.seated === false){
@@ -2570,7 +2574,6 @@ function render(){
   if(sl) sl.textContent = t(STAGE_KEYS[G.stage] || "stagePreflop");
   updateHandInfo();
 
-  /* ★ 非自己回合强制隐藏操作按钮 */
   const meIdx = myIndex();
   const meNow = G.players[meIdx];
   const myTurn = (G.currentPlayerIndex === meIdx)
@@ -2709,7 +2712,6 @@ function showHumanControls(){
     box.appendChild(raiseBtn);
   }
 
-  /* ★ 轮到玩家时，右侧面板自动滚到底部 */
   setTimeout(function(){
     const sr = document.querySelector('.side-right');
     if(sr && sr.scrollHeight > sr.clientHeight){
@@ -2740,7 +2742,6 @@ function openRaisePanel(){
   panel.classList.remove("hidden");
   if(window.PokerAudio) PokerAudio.play('click');
 
-  /* ★ 打开加注面板时，自动滚动到可见区域 */
   setTimeout(function(){
     const panel2 = document.getElementById('raisePanel');
     if(panel2){
@@ -3014,7 +3015,6 @@ function initChat(){
   }
   if(input) input.placeholder = t('chatPlaceholder');
 
-  /* ★ 事件委托：点任何 .chat-close 都关闭聊天面板 */
   document.addEventListener('pointerdown', function(e){
     const tgt = e.target;
     if(tgt && tgt.classList && tgt.classList.contains('chat-close')){
@@ -3026,7 +3026,6 @@ function initChat(){
     }
   }, true);
 
-  /* ★ 点击面板外部关闭 */
   document.addEventListener('pointerdown', function(e){
     const p = document.getElementById('chatPanel');
     if(!p || p.classList.contains('hidden')) return;
@@ -3036,7 +3035,6 @@ function initChat(){
     p.classList.add('hidden');
   }, true);
 
-  /* ★ ESC 关闭 */
   document.addEventListener('keydown', function(e){
     if(e.key === 'Escape'){
       const p = document.getElementById('chatPanel');
@@ -3221,9 +3219,9 @@ document.addEventListener("DOMContentLoaded", function(){
   if(sn) sn.onclick = function(){
     if(window.PokerAudio) PokerAudio.play('click');
     const v = $("nicknameInput").value.trim();
-    if(!v){ alert(isEn() ? "Enter a nickname" : "请输入昵称"); return; }
+    if(!v){ appToast(isEn() ? "Enter a nickname" : "请输入昵称", "error"); return; }
     PokerStorage.setNickname(v);
-    alert(isEn() ? ("Saved: " + v) : ("已保存：" + v));
+    appToast(isEn() ? ("Saved: " + v) : ("已保存：" + v), "success");
   };
   const cw = $("connectWalletBtn");
   const rc = $("realConnectBtn");
@@ -3232,19 +3230,19 @@ document.addEventListener("DOMContentLoaded", function(){
     try {
       const res = await PokerWallet.connect();
       if(res){ $("walletOverlay").classList.add("hidden"); refreshBalanceUI(); }
-      else { alert(isEn() ? "Connect failed" : "连接失败"); }
-    } catch(e){ console.error(e); alert(isEn() ? "Connect failed" : "连接失败"); }
+      else { appToast(isEn() ? "Connect failed" : "连接失败", "error"); }
+    } catch(e){ console.error(e); appToast(isEn() ? "Connect failed" : "连接失败", "error"); }
   };
   if(cw) cw.onclick = doConnect;
   if(rc) rc.onclick = doConnect;
 
   const db = $("depositBtn");
   if(db) db.onclick = async function(){
-    if(!PokerWallet.isConnected()){ alert(isEn() ? "Connect wallet first" : "请先连接钱包"); return; }
+    if(!PokerWallet.isConnected()){ appToast(isEn() ? "Connect wallet first" : "请先连接钱包", "error"); return; }
     const amt = parseFloat($("depositAmount").value);
-    if(!amt || amt <= 0){ alert(isEn() ? "Enter an amount" : "请输入充值数量"); return; }
+    if(!amt || amt <= 0){ appToast(isEn() ? "Enter an amount" : "请输入充值数量", "error"); return; }
     if(amt < MIN_DEPOSIT_BEM){
-      alert(isEn() ? ("Minimum " + MIN_DEPOSIT_BEM + " BEM") : ("最低充值 " + MIN_DEPOSIT_BEM + " BEM"));
+      appToast(isEn() ? ("Minimum " + MIN_DEPOSIT_BEM + " BEM") : ("最低充值 " + MIN_DEPOSIT_BEM + " BEM"), "error");
       return;
     }
     try {
@@ -3253,29 +3251,29 @@ document.addEventListener("DOMContentLoaded", function(){
         PokerStorage.setRealChips(PokerStorage.getRealChips() + res.netChips);
         refreshBalanceUI();
         $("depositAmount").value = "";
-        alert(isEn() ? ("Deposited +" + res.netChips.toLocaleString()) : ("充值成功 +" + res.netChips.toLocaleString()));
+        appToast(isEn() ? ("Deposited +" + res.netChips.toLocaleString()) : ("充值成功 +" + res.netChips.toLocaleString()), "success");
       }
     } catch(err){
       console.error('[deposit]', err);
       const msg = err && (err.reason || err.shortMessage || err.message) ? (err.reason || err.shortMessage || err.message) : String(err);
-      alert((isEn() ? "Deposit failed: " : "充值失败：") + msg);
+      appToast((isEn() ? "Deposit failed: " : "充值失败：") + msg, "error");
     }
   };
 
   const wd = $("withdrawBtn");
   if(wd) wd.onclick = async function(){
-    if(!PokerWallet.isConnected()){ alert(isEn() ? "Connect wallet first" : "请先连接钱包"); return; }
+    if(!PokerWallet.isConnected()){ appToast(isEn() ? "Connect wallet first" : "请先连接钱包", "error"); return; }
     const bem = parseFloat($("withdrawAmount").value);
-    if(!bem || bem <= 0){ alert(isEn() ? "Enter an amount" : "请输入提现数量"); return; }
+    if(!bem || bem <= 0){ appToast(isEn() ? "Enter an amount" : "请输入提现数量", "error"); return; }
     if(bem < MIN_WITHDRAW_BEM){
-      alert(isEn() ? ("Minimum " + MIN_WITHDRAW_BEM + " BEM") : ("最低提现 " + MIN_WITHDRAW_BEM + " BEM"));
+      appToast(isEn() ? ("Minimum " + MIN_WITHDRAW_BEM + " BEM") : ("最低提现 " + MIN_WITHDRAW_BEM + " BEM"), "error");
       return;
     }
     const chipsNeeded = Math.ceil(bem / CHIP_TO_BEM);
     const have = PokerStorage.getRealChips();
     if(have < chipsNeeded){
-      alert(isEn() ? ("Not enough chips. Need " + chipsNeeded.toLocaleString() + ", have " + have.toLocaleString())
-                   : ("筹码不足。需要 " + chipsNeeded.toLocaleString() + " 筹码，当前 " + have.toLocaleString()));
+      appToast(isEn() ? ("Not enough chips. Need " + chipsNeeded.toLocaleString() + ", have " + have.toLocaleString())
+                      : ("筹码不足。需要 " + chipsNeeded.toLocaleString() + " 筹码，当前 " + have.toLocaleString()), "error");
       return;
     }
     if(!confirm(isEn()
@@ -3290,12 +3288,12 @@ document.addEventListener("DOMContentLoaded", function(){
         PokerStorage.setRealChips(have - chipsNeeded);
         refreshBalanceUI();
         $("withdrawAmount").value = "";
-        alert(isEn() ? ("Withdraw success: +" + bem + " BEM") : ("提现成功：+" + bem + " BEM"));
+        appToast(isEn() ? ("Withdraw success: +" + bem + " BEM") : ("提现成功：+" + bem + " BEM"), "success");
       }
     } catch(err){
       console.error('[withdraw]', err);
       const msg = err && (err.reason || err.shortMessage || err.message) ? (err.reason || err.shortMessage || err.message) : String(err);
-      alert((isEn() ? "Withdraw failed: " : "提现失败：") + msg);
+      appToast((isEn() ? "Withdraw failed: " : "提现失败：") + msg, "error");
     }
   };
 
@@ -3394,7 +3392,6 @@ document.addEventListener("DOMContentLoaded", function(){
     if(b) applyRaisePreset(b.getAttribute('data-preset'));
   });
 
-  /* ★ 手机端对局记录 */
   const mlogFab = document.getElementById('mobileLogFab');
   const mlogPanel = document.getElementById('mobileLogPanel');
   const mlogClose = document.getElementById('mobileLogClose');
@@ -3435,28 +3432,27 @@ document.addEventListener("DOMContentLoaded", function(){
     };
   });
 
-  /* ★ 缩放控制：viewport + CSS 双方案 */
   let _zoomLevel = parseInt(localStorage.getItem('neon_holdem_zoom') || '100', 10);
   if(isNaN(_zoomLevel)) _zoomLevel = 100;
   if(_zoomLevel < 50) _zoomLevel = 50;
   if(_zoomLevel > 110) _zoomLevel = 110;
 
   function applyZoom(){
-  const scale = _zoomLevel / 100;
-  const gs = document.getElementById('gameScreen');
-  if(!gs) return;
-  gs.style.zoom = String(scale);
-  if(scale === 1){
-    gs.style.width = '';
-    gs.style.height = '';
-    document.body.classList.remove('zoom-active');
-  } else {
-    gs.style.width = (100 / scale) + 'vw';
-    gs.style.height = (100 / scale) + 'dvh';
-    document.body.classList.add('zoom-active');
+    const scale = _zoomLevel / 100;
+    const gs = document.getElementById('gameScreen');
+    if(!gs) return;
+    gs.style.zoom = String(scale);
+    if(scale === 1){
+      gs.style.width = '';
+      gs.style.height = '';
+      document.body.classList.remove('zoom-active');
+    } else {
+      gs.style.width = (100 / scale) + 'vw';
+      gs.style.height = (100 / scale) + 'dvh';
+      document.body.classList.add('zoom-active');
+    }
+    try { localStorage.setItem('neon_holdem_zoom', String(_zoomLevel)); } catch(e){}
   }
-  try { localStorage.setItem('neon_holdem_zoom', String(_zoomLevel)); } catch(e){}
-}
   applyZoom();
 
   const zOut = $("zoomOutBtn");
